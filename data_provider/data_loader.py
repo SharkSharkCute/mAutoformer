@@ -1,10 +1,13 @@
 import os
 import pandas as pd
+import traceback
 from torch.utils.data import Dataset
 from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
 import warnings
 import numpy as np
+import calendar
+from datetime import datetime
 warnings.filterwarnings('ignore')
 
 
@@ -191,7 +194,7 @@ class Dataset_ETT_minute(Dataset):
 python -u run.py `
 --is_training 1 `
 --root_path ./data/ `
---data_path train_FD001_auto.csv `
+--data_path test.csv `
 --model_id FD_5_25 `
 --model Autoformer `
 --data custom `
@@ -220,6 +223,7 @@ class Dataset_Custom(Dataset):
     def __init__(self, root_path, flag='train', size=None,
                  features='S', data_path='ETTh1.csv',
                  target='OT', scale=True, timeenc=0, freq='h'):
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -309,6 +313,10 @@ class Dataset_Custom(Dataset):
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
+        print("---------------")
+        traceback.print_stack()
+        print("---------------")
+        print("")
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
@@ -319,7 +327,7 @@ python -u run.py `
 --is_training 1 `
 --root_path ./data/ `
 --data_path NULL `
---seq_len 30 `
+--seq_len 10 `
 --label_len 0 `
 --pred_len 1 `
 --features NULL `
@@ -339,15 +347,18 @@ python -u run.py `
 --des quick_test `
 --itr 1 `
 --train_epochs 100 `
---batch_size 128 `
+--batch_size 1 `
 --d_model 768 `
---num_workers 4
+--num_workers 1 `
+--batch_size 1 
 """
 class Dataset_CMAPSS(Dataset):
     def __init__(self, root_path, data_path,size, features, target, timeenc, freq,  flag, scaler=True):
+        print("INIT!!!!!!!!!!!!!!!!!!!!!!!!!")
         self.seq_len = size[0]
         self.label_len = size[1]
         self.pred_len = size[2]
+        
         self.target = target
 
         assert flag in ['train', 'test', 'val']
@@ -362,14 +373,31 @@ class Dataset_CMAPSS(Dataset):
         self.scaler = scaler
         self.__read_data__()
 
+    def build_timestamp(self, stamp_seq, base_year=1970):
+        n = len(stamp_seq)
+        ts_list = []
+        for idx in range(n):
+            row = stamp_seq.iloc[idx]
+            year  = base_year + idx // 360  
+            month = int(row.month)
+            day   = int(row.day)
+            max_day = calendar.monthrange(year, month)[1]
+            if day > max_day:
+                day = max_day
+            hour   = int(row.hour)
+            minute = int(row.minute) * 15   
+            ts_list.append(datetime(year, month, day, hour, minute, 0).strftime('%Y-%m-%d %H:%M:%S'))
+        return pd.Series(ts_list, name="date")
+    
     def __add_remaining_useful_life__(self, df):
         max_cycle = df["time_cycles"].max()
         df["RUL"] = max_cycle - df["time_cycles"]
         return df
     
-    def __save_autoformer_csv__(self, df):
-        save_path = os.path.join(self.root_path, 'train_data.csv')
-        df.to_csv(save_path, index=False)
+    def __save_autoformer_csv__(self, file_name, df_list):
+        save_path = os.path.join(self.root_path, file_name)
+        all_df = pd.concat(df_list, ignore_index=True)
+        all_df.to_csv(save_path, index=False)
         print(f'[Info] Saved preprocessed data to {save_path}')
     
     def __load_train_data_(self):
@@ -380,32 +408,36 @@ class Dataset_CMAPSS(Dataset):
 
         train_list = []
         self.data_stamp = []
+
         for index in range(1,5):
             index_train_file = os.path.join(self.root_path, f'train_FD00{index}.txt')
             df = pd.read_csv(index_train_file, sep=r'\s+', header=None, names=col_names)
 
             grouped = df.groupby('unit_nr')
-            for _, unit_df in grouped:
-                unit_df = unit_df.reset_index(drop=True)
+            for index, unit_df in grouped:
                 unit_df = self.__add_remaining_useful_life__(unit_df)
-
                 cols = list(unit_df.columns)
-                cols.remove(self.target)
                 cols.remove('time_cycles')
                 cols.remove('unit_nr')
-                unit_df = unit_df[cols + [self.target]]
+                unit_df = unit_df[cols]
 
-                train_list.append(unit_df)
+                time_step = unit_df.shape[0]
                 
-                n = len(unit_df)
                 stamp_seq = pd.DataFrame({
-                    "month": [(i // 30) % 12 + 1 for i in range(n)],
-                    "day": [(i % 30) + 1 for i in range(n)],
-                    "weekday": [i % 7 for i in range(n)],
-                    "hour": [i % 24 for i in range(n)],
-                    "minute": [(i % 60) // 15 for i in range(n)], 
+                    "month": [(i // 30) % 12 + 1 for i in range(time_step)],
+                    "day": [(i % 30) + 1 for i in range(time_step)],
+                    "weekday": [i % 7 for i in range(time_step)],
+                    "hour": [i % 24 for i in range(time_step)],
+                    "minute": [(i % 60) // 15 for i in range(time_step)], 
                 })
+                stamp_seq = stamp_seq.values.astype(np.float32) 
+                unit_df = unit_df.reset_index(drop=True)
+                #unit_df = pd.concat([self.build_timestamp(stamp_seq), unit_df], axis=1)
+                
+                train_list.append(unit_df)
                 self.data_stamp.append(stamp_seq)
+
+        #self.__save_autoformer_csv__("test.csv", train_list)
 
         return train_list
     
@@ -422,10 +454,12 @@ class Dataset_CMAPSS(Dataset):
             index_test_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
             df = pd.read_csv(index_test_file, sep=r'\s+', header=None, names=col_names)
 
+            tmp_rul_list = []
+            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
+                tmp_rul_list = [int(line.strip()) for line in f if line.strip()]
+                 
             grouped = df.groupby('unit_nr')
-            for _, unit_df in grouped:
-                unit_df = unit_df.reset_index(drop=True)
-
+            for index, unit_df in grouped:
                 cols = list(unit_df.columns)
                 cols.remove('time_cycles')
                 cols.remove('unit_nr')
@@ -437,13 +471,9 @@ class Dataset_CMAPSS(Dataset):
                     "day": [(i % 30) + 1 for i in range(n)],
                     "weekday": [i % 7 for i in range(n)],
                     "hour": [i % 24 for i in range(n)],
-                    "minute": [(i % 60) // 15 for i in range(n)],  # 15分钟为一类，可选
+                    "minute": [(i % 60) // 15 for i in range(n)], 
                 })
                 self.data_stamp.append(stamp_seq)
-
-            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
-                tmp_rul_list = [int(line.strip()) for line in f if line.strip()]
-                rul_list.extend(tmp_rul_list) 
         
         return test_list, rul_list
     
@@ -454,35 +484,30 @@ class Dataset_CMAPSS(Dataset):
         total_len = len(df_list)
         num_train = int(total_len * 0.8)
 
-        train_concat = pd.concat([df.drop(columns=[self.target]) for df in df_list[:num_train]], axis=0)
-        self.scaler.fit(train_concat.values)
-        for i in range(len(df_list)):
-            rul_col = df_list[i][self.target].values.reshape(-1, 1)
-            features = df_list[i].drop(columns=[self.target])
-            
-            scaled = self.scaler.transform(features.values)
-            
-            df_scaled = pd.DataFrame(scaled, columns=features.columns)
-            df_scaled[self.target] = rul_col
+        train_concat = df_list[:num_train]
+        concat_df = pd.concat(train_concat, ignore_index=True)
+        self.scaler.fit(concat_df.values)
 
-            df_list[i] = df_scaled
-
-        if self.set_type == 2:
-            self.data_x, self.data_y = self.__load_test_data_()
-           
-        elif self.set_type == 0:
-            self.data_x = df_list[:num_train]
-            self.data_y = df_list[:num_train]
+        if self.set_type == 0:
+            self.data_x = [self.scaler.transform(df.values) for df in df_list]
+            self.data_x = self.data_x[:num_train]
+            self.data_y = [x.copy() for x in self.data_x]
+            self.data_stamp = self.data_stamp[:num_train]
         elif self.set_type == 1:
-            self.data_x = df_list[num_train:]
-            self.data_y = df_list[num_train:]
+            self.data_x = [self.scaler.transform(df.values) for df in df_list]
+            self.data_x = self.data_x[num_train:]
+            self.data_y = [x.copy() for x in self.data_x]
+            self.data_stamp = self.data_stamp[num_train:]
+        if self.set_type == 2:
+            self.data_x, self.data_y = self.__load_test_data_() 
+            data = self.scaler.transform(df_list.values)
 
         self.index_list = []
         for i, seq in enumerate(self.data_x):
             max_len = max(0, len(seq) - self.seq_len - self.pred_len + 1)
             for j in range(max_len):
                 self.index_list.append((i, j))
-
+        
     def __getitem__(self, index):
         i, j = self.index_list[index]
     
@@ -491,15 +516,22 @@ class Dataset_CMAPSS(Dataset):
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 
-        seq_x = np.array(self.data_x[i][s_begin:s_end]).astype(np.float32)
-        seq_y = np.array(self.data_y[i][r_begin:r_end]).astype(np.float32)
-        seq_x_mark = np.array(self.data_stamp[i][s_begin:s_end]).astype(np.float32)
-        seq_y_mark = np.array(self.data_stamp[i][r_begin:r_end]).astype(np.float32)
+        seq_x = self.data_x[i][s_begin:s_end]
+        seq_y = self.data_y[i][r_begin:r_end]
+        seq_x_mark = self.data_stamp[i][s_begin:s_end]
+        seq_y_mark = self.data_stamp[i][r_begin:r_end]
 
-        if seq_x.shape[0] != self.seq_len or seq_y.shape[0] != self.pred_len:
-            print(f"[Error] index {index}, i={i}, j={j}")
-            print(f"  seq_x.shape = {seq_x.shape}, seq_y.shape = {seq_y.shape}")
-            raise ValueError("Inconsistent input length")
+        if (seq_x.shape[0] != self.seq_len or
+            seq_y.shape[0] != self.label_len + self.pred_len or
+            seq_x_mark.shape[0] != self.seq_len or
+            seq_y_mark.shape[0] != self.label_len + self.pred_len
+        ):
+            print("Error at index:", index)
+            print("seq_x.shape:", seq_x.shape)
+            print("seq_y.shape:", seq_y.shape)
+            print("seq_x_mark.shape:", seq_x_mark.shape)
+            print("seq_y_mark.shape:", seq_y_mark.shape)
+            raise ValueError("Sample shape mismatch!")
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
