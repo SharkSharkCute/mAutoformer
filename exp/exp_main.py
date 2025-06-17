@@ -53,9 +53,10 @@ class Exp_Main(Exp_Basic):
         return criterion
 
     def _predict(self, batch_x, batch_y, batch_x_mark, batch_y_mark):
+        batch_x = batch_x[:,:,:-1]
         # decoder input
-        dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-        dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+        dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :-1]).float()
+        dec_inp = torch.cat([batch_y[:, :self.args.label_len, :-1], dec_inp], dim=1).float().to(self.device)
         # encoder - decoder
 
         def _run_model():
@@ -70,9 +71,8 @@ class Exp_Main(Exp_Basic):
         else:
             outputs = _run_model()
 
-        f_dim = -1 if self.args.features == 'MS' else 0
-        outputs = outputs[:, -self.args.pred_len:, f_dim:]
-        batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+        outputs = outputs[:, -self.args.pred_len:, -1:]
+        batch_y = batch_y[:, -self.args.pred_len:, -1:].to(self.device)
 
         return outputs, batch_y
 
@@ -109,7 +109,6 @@ class Exp_Main(Exp_Basic):
             os.makedirs(path)
 
         time_now = time.time()
-
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 

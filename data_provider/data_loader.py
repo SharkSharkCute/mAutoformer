@@ -327,12 +327,11 @@ python -u run.py `
 --is_training 1 `
 --root_path ./data/ `
 --data_path NULL `
---seq_len 10 `
+--seq_len 30 `
 --label_len 0 `
 --pred_len 1 `
---features NULL `
+--features MS `
 --target RUL `
---embed timeF `
 --freq NULL `
 --model_id FD_5_25 `
 --model Autoformer `
@@ -340,17 +339,16 @@ python -u run.py `
 --e_layers 4 `
 --d_layers 2 `
 --factor 3 `
---enc_in 25 `
---dec_in 25 `
+--enc_in 24 `
+--dec_in 24 `
 --c_out 1 `
 --embed none `
 --des quick_test `
 --itr 1 `
 --train_epochs 100 `
---batch_size 1 `
 --d_model 768 `
---num_workers 1 `
---batch_size 1 
+--num_workers 5 `
+--batch_size 128
 """
 class Dataset_CMAPSS(Dataset):
     def __init__(self, root_path, data_path,size, features, target, timeenc, freq,  flag, scaler=True):
@@ -419,6 +417,7 @@ class Dataset_CMAPSS(Dataset):
                 cols = list(unit_df.columns)
                 cols.remove('time_cycles')
                 cols.remove('unit_nr')
+                #cols.remove('RUL')
                 unit_df = unit_df[cols]
 
                 time_step = unit_df.shape[0]
@@ -463,6 +462,7 @@ class Dataset_CMAPSS(Dataset):
                 cols = list(unit_df.columns)
                 cols.remove('time_cycles')
                 cols.remove('unit_nr')
+                cols.remove('RUL')
                 test_list.append(unit_df)
 
                 n = len(unit_df)
@@ -521,17 +521,6 @@ class Dataset_CMAPSS(Dataset):
         seq_x_mark = self.data_stamp[i][s_begin:s_end]
         seq_y_mark = self.data_stamp[i][r_begin:r_end]
 
-        if (seq_x.shape[0] != self.seq_len or
-            seq_y.shape[0] != self.label_len + self.pred_len or
-            seq_x_mark.shape[0] != self.seq_len or
-            seq_y_mark.shape[0] != self.label_len + self.pred_len
-        ):
-            print("Error at index:", index)
-            print("seq_x.shape:", seq_x.shape)
-            print("seq_y.shape:", seq_y.shape)
-            print("seq_x_mark.shape:", seq_x_mark.shape)
-            print("seq_y_mark.shape:", seq_y_mark.shape)
-            raise ValueError("Sample shape mismatch!")
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
