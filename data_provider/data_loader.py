@@ -330,7 +330,7 @@ python -u run.py `
 --seq_len 30 `
 --label_len 0 `
 --pred_len 1 `
---features MS `
+--features NULL `
 --target RUL `
 --freq NULL `
 --model_id FD_5_25 `
@@ -352,7 +352,6 @@ python -u run.py `
 """
 class Dataset_CMAPSS(Dataset):
     def __init__(self, root_path, data_path,size, features, target, timeenc, freq,  flag, scaler=True):
-        print("INIT!!!!!!!!!!!!!!!!!!!!!!!!!")
         self.seq_len = size[0]
         self.label_len = size[1]
         self.pred_len = size[2]
@@ -398,7 +397,44 @@ class Dataset_CMAPSS(Dataset):
         all_df.to_csv(save_path, index=False)
         print(f'[Info] Saved preprocessed data to {save_path}')
     
-    def __load_train_data_(self):
+    def __load_test_data_(self):
+        names = ['unit_nr', 'time_cycles']
+        setting_names = ['setting_1', 'setting_2', 'setting_3']
+        sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
+        col_names = names + setting_names + sensor_names 
+
+        test_list = []
+        rul_list = []
+        self.data_stamp = []
+        for index in range(1,5):
+            index_test_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
+            df = pd.read_csv(index_test_file, sep=r'\s+', header=None, names=col_names)
+
+            tmp_rul_list = []
+            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
+                tmp_rul_list = [int(line.strip()) for line in f if line.strip()]
+                 
+            grouped = df.groupby('unit_nr')
+            for index, unit_df in grouped:
+                cols = list(unit_df.columns)
+                cols.remove('time_cycles')
+                cols.remove('unit_nr')
+                cols.remove('RUL')
+                test_list.append(unit_df)
+
+                n = len(unit_df)
+                stamp_seq = pd.DataFrame({
+                    "month": [(i // 30) % 12 + 1 for i in range(n)],
+                    "day": [(i % 30) + 1 for i in range(n)],
+                    "weekday": [i % 7 for i in range(n)],
+                    "hour": [i % 24 for i in range(n)],
+                    "minute": [(i % 60) // 15 for i in range(n)], 
+                })
+                self.data_stamp.append(stamp_seq)
+        
+        return test_list, rul_list
+    
+    def __read_data__(self):
         names = ['unit_nr', 'time_cycles']
         setting_names = ['setting_1', 'setting_2', 'setting_3']
         sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
@@ -438,69 +474,29 @@ class Dataset_CMAPSS(Dataset):
 
         #self.__save_autoformer_csv__("test.csv", train_list)
 
-        return train_list
-    
-    def __load_test_data_(self):
-        names = ['unit_nr', 'time_cycles']
-        setting_names = ['setting_1', 'setting_2', 'setting_3']
-        sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
-        col_names = names + setting_names + sensor_names 
-
-        test_list = []
-        rul_list = []
-        self.data_stamp = []
-        for index in range(1,5):
-            index_test_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
-            df = pd.read_csv(index_test_file, sep=r'\s+', header=None, names=col_names)
-
-            tmp_rul_list = []
-            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
-                tmp_rul_list = [int(line.strip()) for line in f if line.strip()]
-                 
-            grouped = df.groupby('unit_nr')
-            for index, unit_df in grouped:
-                cols = list(unit_df.columns)
-                cols.remove('time_cycles')
-                cols.remove('unit_nr')
-                cols.remove('RUL')
-                test_list.append(unit_df)
-
-                n = len(unit_df)
-                stamp_seq = pd.DataFrame({
-                    "month": [(i // 30) % 12 + 1 for i in range(n)],
-                    "day": [(i % 30) + 1 for i in range(n)],
-                    "weekday": [i % 7 for i in range(n)],
-                    "hour": [i % 24 for i in range(n)],
-                    "minute": [(i % 60) // 15 for i in range(n)], 
-                })
-                self.data_stamp.append(stamp_seq)
-        
-        return test_list, rul_list
-    
-    def __read_data__(self):
         self.scaler = StandardScaler()
 
-        df_list = self.__load_train_data_()
-        total_len = len(df_list)
-        num_train = int(total_len * 0.8)
+        total_len = len(train_list)
+        num_train = int(total_len * 0.7)
+        num_vali = int(total_len * 0.2)
+        num_test = int(total_len - num_train - num_vali)
 
-        train_concat = df_list[:num_train]
+        train_concat = train_list[:num_train]
         concat_df = pd.concat(train_concat, ignore_index=True)
         self.scaler.fit(concat_df.values)
+        self.data_x = [self.scaler.transform(df.values) for df in train_list]
 
         if self.set_type == 0:
-            self.data_x = [self.scaler.transform(df.values) for df in df_list]
             self.data_x = self.data_x[:num_train]
-            self.data_y = [x.copy() for x in self.data_x]
             self.data_stamp = self.data_stamp[:num_train]
         elif self.set_type == 1:
-            self.data_x = [self.scaler.transform(df.values) for df in df_list]
-            self.data_x = self.data_x[num_train:]
-            self.data_y = [x.copy() for x in self.data_x]
-            self.data_stamp = self.data_stamp[num_train:]
-        if self.set_type == 2:
-            self.data_x, self.data_y = self.__load_test_data_() 
-            data = self.scaler.transform(df_list.values)
+            self.data_x = self.data_x[num_train: num_train + num_vali]
+            self.data_stamp = self.data_stamp[num_train:num_train + num_vali] 
+        elif self.set_type == 2:
+            self.data_x = self.data_x[num_train + num_vali:]
+            self.data_stamp = self.data_stamp[num_train + num_vali:]
+
+        self.data_y = [x.copy() for x in self.data_x]
 
         self.index_list = []
         for i, seq in enumerate(self.data_x):
@@ -530,108 +526,138 @@ class Dataset_CMAPSS(Dataset):
         return self.scaler.inverse_transform(data)
     
 
+"""
+python -u run.py `
+--is_training 0 `
+--root_path ./data/ `
+--data_path NULL `
+--seq_len 30 `
+--label_len 0 `
+--pred_len 1 `
+--features NULL `
+--target RUL `
+--freq NULL `
+--model_id FD_5_25 `
+--model Autoformer `
+--data Pred `
+--checkpoints ./checkpoints/ `
+--e_layers 4 `
+--d_layers 2 `
+--factor 3 `
+--enc_in 24 `
+--dec_in 24 `
+--c_out 1 `
+--embed none `
+--des quick_test `
+--itr 1 `
+--train_epochs 100 `
+--d_model 768 `
+--num_workers 5 `
+--batch_size 128
+"""
 class Dataset_Pred(Dataset):
-    def __init__(self, root_path, flag='pred', size=None,
-                 features='S', data_path='ETTh1.csv',
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='15min', cols=None):
-        # size [seq_len, label_len, pred_len]
-        # info
-        if size == None:
-            self.seq_len = 24 * 4 * 4
-            self.label_len = 24 * 4
-            self.pred_len = 24 * 4
-        else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-        # init
-        assert flag in ['pred']
-
-        self.features = features
+    def __init__(self, root_path, data_path,size, features, target, timeenc, freq,  flag, scaler=True):
+        
+        self.seq_len = size[0]
+        self.label_len = size[1]
+        self.pred_len = size[2]
         self.target = target
-        self.scale = scale
-        self.inverse = inverse
-        self.timeenc = timeenc
-        self.freq = freq
-        self.cols = cols
         self.root_path = root_path
         self.data_path = data_path
+        self.features = features
+        self.timeenc = timeenc
+        self.freq = freq
+        self.scale = scaler
         self.__read_data__()
 
+    def build_timestamp(self, stamp_seq, base_year=1970):
+        n = len(stamp_seq)
+        ts_list = []
+        for idx in range(n):
+            row = stamp_seq.iloc[idx]
+            year  = base_year + idx // 360  
+            month = int(row.month)
+            day   = int(row.day)
+            max_day = calendar.monthrange(year, month)[1]
+            if day > max_day:
+                day = max_day
+            hour   = int(row.hour)
+            minute = int(row.minute) * 15   
+            ts_list.append(datetime(year, month, day, hour, minute, 0).strftime('%Y-%m-%d %H:%M:%S'))
+        return pd.Series(ts_list, name="date")
+    
     def __read_data__(self):
+        names = ['unit_nr', 'time_cycles']
+        setting_names = ['setting_1', 'setting_2', 'setting_3']
+        sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
+        col_names = names + setting_names + sensor_names 
+
+        pre_list = []
+        self.data_stamp = []
+        self.targetCol = []
+        for index in range(1,5):
+            index_train_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
+            df = pd.read_csv(index_train_file, sep=r'\s+', header=None, names=col_names)
+
+            org_rul_list = []
+            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
+                org_rul_list = [int(line.strip()) for line in f if line.strip()]
+
+            grouped = df.groupby('unit_nr')
+            if(len(org_rul_list) != grouped.ngroups):
+                print("len(org_rul_list) != grouped.ngroups")
+                quit()
+
+            tmp_rul_list = []
+            for index, unit_df in grouped:
+                cols = list(unit_df.columns)
+                cols.remove('time_cycles')
+                cols.remove('unit_nr')
+
+                unit_df = unit_df[cols]
+
+                time_step = unit_df.shape[0]
+                stamp_seq = pd.DataFrame({
+                    "month": [(i // 30) % 12 + 1 for i in range(time_step)],
+                    "day": [(i % 30) + 1 for i in range(time_step)],
+                    "weekday": [i % 7 for i in range(time_step)],
+                    "hour": [i % 24 for i in range(time_step)],
+                    "minute": [(i % 60) // 15 for i in range(time_step)], 
+                })
+                stamp_seq = stamp_seq.values.astype(np.float32) 
+                unit_df = unit_df.reset_index(drop=True)
+                unit_df["RUL"] = 0 
+                if unit_df.shape[0] < (self.seq_len + self.pred_len):
+                    continue
+
+                pre_list.append(unit_df)
+                self.data_stamp.append(stamp_seq)
+                #self.targetCol.append(org_rul_list[index])
+
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        if self.cols:
-            cols = self.cols.copy()
-            cols.remove(self.target)
-        else:
-            cols = list(df_raw.columns)
-            cols.remove(self.target)
-            cols.remove('date')
-        df_raw = df_raw[['date'] + cols + [self.target]]
-        border1 = len(df_raw) - self.seq_len
-        border2 = len(df_raw)
+        concat_df = pd.concat(pre_list, ignore_index=True)
+        self.scaler.fit(concat_df.values)
 
-        if self.features == 'M' or self.features == 'MS':
-            cols_data = df_raw.columns[1:]
-            df_data = df_raw[cols_data]
-        elif self.features == 'S':
-            df_data = df_raw[[self.target]]
-
-        if self.scale:
-            self.scaler.fit(df_data.values)
-            data = self.scaler.transform(df_data.values)
-        else:
-            data = df_data.values
-
-        tmp_stamp = df_raw[['date']][border1:border2]
-        tmp_stamp['date'] = pd.to_datetime(tmp_stamp.date)
-        pred_dates = pd.date_range(tmp_stamp.date.values[-1], periods=self.pred_len + 1, freq=self.freq)
-
-        df_stamp = pd.DataFrame(columns=['date'])
-        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:])
-        if self.timeenc == 0:
-            df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
-            df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
-            df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
-            df_stamp['hour'] = df_stamp.date.apply(lambda row: row.hour, 1)
-            df_stamp['minute'] = df_stamp.date.apply(lambda row: row.minute, 1)
-            df_stamp['minute'] = df_stamp.minute.map(lambda x: x // 15)
-            data_stamp = df_stamp.drop(columns=['date']).values
-
-        elif self.timeenc == 1:
-            data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0)
-
-        self.data_x = data[border1:border2]
-        if self.inverse:
-            self.data_y = df_data.values[border1:border2]
-        else:
-            self.data_y = data[border1:border2]
-        self.data_stamp = data_stamp
+        self.data_x = [self.scaler.transform(df.values) for df in pre_list]
+        self.data_y = [x.copy() for x in self.data_x]
 
     def __getitem__(self, index):
-        s_begin = index
+        total_len = self.data_x[index].shape[0]
+        
+        s_begin = total_len - (self.seq_len + self.pred_len)
         s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
+        r_begin = total_len - (self.label_len + self.pred_len)
+        r_end = total_len
 
-        seq_x = self.data_x[s_begin:s_end]
-        if self.inverse:
-            seq_y = self.data_x[r_begin:r_begin + self.label_len]
-        else:
-            seq_y = self.data_y[r_begin:r_begin + self.label_len]
-        seq_x_mark = self.data_stamp[s_begin:s_end]
-        seq_y_mark = self.data_stamp[r_begin:r_end]
-
+        seq_x = self.data_x[index][s_begin:s_end]
+        seq_y = self.data_y[index][r_begin:r_end]
+        seq_x_mark = self.data_stamp[index][s_begin:s_end]
+        seq_y_mark = self.data_stamp[index][r_begin:r_end]
+        
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
-        return len(self.data_x) - self.seq_len + 1
+        return len(self.data_x)
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)

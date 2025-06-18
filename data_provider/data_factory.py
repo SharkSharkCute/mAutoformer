@@ -8,6 +8,7 @@ data_dict = {
     'ETTm2': Dataset_ETT_minute,
     'custom': Dataset_Custom,
     'CMAPSS': Dataset_CMAPSS, 
+    'Pred': Dataset_Pred,
 }
 
 
