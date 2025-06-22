@@ -94,7 +94,7 @@ class Exp_Main(Exp_Basic):
                 true = batch_y.detach().cpu()
 
                 loss = criterion(pred, true)
-
+            
                 total_loss.append(loss)
         total_loss = np.average(total_loss)
         self.model.train()
@@ -125,6 +125,12 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
+            mean_x = train_loader.dataset.scaler_x.mean_[-1]
+            scale_x = train_loader.dataset.scaler_x.scale_[-1]
+
+            mean_y = train_loader.dataset.scaler_y.mean_[-1]
+            scale_y = train_loader.dataset.scaler_y.scale_[-1]
+
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
@@ -137,6 +143,11 @@ class Exp_Main(Exp_Basic):
                 outputs, batch_y = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
 
                 loss = criterion(outputs, batch_y)
+                """
+                outputs_original = outputs * scale_y + mean_y 
+                batch_y_original = batch_y * scale_y + mean_y 
+                print(f"{int(outputs_original[0, 0,0])}, {int(batch_y_original[0,0,0])}")
+                """
                 train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
@@ -147,6 +158,8 @@ class Exp_Main(Exp_Basic):
                     iter_count = 0
                     time_now = time.time()
 
+                    #print(f"{int(outputs_original[0, 0,0])}, {int(batch_y_original[0,0,0])}")
+                    #print(f"{outputs.shape},  {batch_y.shape}")
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(model_optim)
@@ -178,17 +191,12 @@ class Exp_Main(Exp_Basic):
         return
 
     def test(self, setting, test):
-        test_data, test_loader = self._get_data(flag = 'test')
-
-        folders = glob.glob(os.path.join('./checkpoints', setting))
-        if not folders:
-            print("Cannot find checkpoint file path")
-            quit()
-
-        ckpt_path = os.path.join(folders[0], 'checkpoint.pth')
-        self.model.load_state_dict(torch.load(ckpt_path))
+        test_data, test_loader = self._get_data(flag = 'real_test')
+        self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
 
         self.model.eval()
+        mean = test_loader.dataset.scaler.mean_[-1]
+        scale = test_loader.dataset.scaler.scale_[-1]
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
@@ -197,12 +205,24 @@ class Exp_Main(Exp_Basic):
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                outputs, _ = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
+                outputs, data_y = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
                 outputs = outputs.detach().cpu().numpy()
-                mean = test_loader.dataset.scaler.mean_[-1]
-                scale = test_loader.dataset.scaler.scale_[-1]
-                outputs_original = outputs * scale + mean   # 还原成真实RUL
-                print(outputs_original[0, 0])
+                data_y = data_y.detach().cpu().numpy()
+
+                outputs_original = outputs * scale + mean
+                data_y_original = data_y * scale + mean 
+                print(f"{outputs_original[0, 0,0]}, {data_y_original[0,0,0]}")
+
+    def test1(self, setting, test):
+        test_data, test_loader = self._get_data(flag = 'real_test')
+
+        with torch.no_grad():
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+                batch_y = batch_y.float().to(self.device)
+                
+                batch_y = batch_y[:, -self.args.pred_len:, -1:].to(self.device)
+                print(f"{batch_y[0,0,0]}", end=" ")
+
     def predict(self, setting, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
 

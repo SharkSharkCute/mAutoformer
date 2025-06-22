@@ -357,9 +357,9 @@ class Dataset_CMAPSS(Dataset):
         self.pred_len = size[2]
         
         self.target = target
-
-        assert flag in ['train', 'test', 'val']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
+        print(flag)
+        assert flag in ['train', 'test', 'val', 'real_test']
+        type_map = {'train': 0, 'val': 1, 'test': 2, 'real_test':3}
         self.set_type = type_map[flag]
         
         self.root_path = root_path
@@ -397,54 +397,17 @@ class Dataset_CMAPSS(Dataset):
         all_df.to_csv(save_path, index=False)
         print(f'[Info] Saved preprocessed data to {save_path}')
     
-    def __load_test_data_(self):
+    def _load_train_data_(self):
         names = ['unit_nr', 'time_cycles']
         setting_names = ['setting_1', 'setting_2', 'setting_3']
         sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
         col_names = names + setting_names + sensor_names 
 
-        test_list = []
-        rul_list = []
+        pd_list = []
         self.data_stamp = []
-        for index in range(1,5):
-            index_test_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
-            df = pd.read_csv(index_test_file, sep=r'\s+', header=None, names=col_names)
-
-            tmp_rul_list = []
-            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
-                tmp_rul_list = [int(line.strip()) for line in f if line.strip()]
-                 
-            grouped = df.groupby('unit_nr')
-            for index, unit_df in grouped:
-                cols = list(unit_df.columns)
-                cols.remove('time_cycles')
-                cols.remove('unit_nr')
-                cols.remove('RUL')
-                test_list.append(unit_df)
-
-                n = len(unit_df)
-                stamp_seq = pd.DataFrame({
-                    "month": [(i // 30) % 12 + 1 for i in range(n)],
-                    "day": [(i % 30) + 1 for i in range(n)],
-                    "weekday": [i % 7 for i in range(n)],
-                    "hour": [i % 24 for i in range(n)],
-                    "minute": [(i % 60) // 15 for i in range(n)], 
-                })
-                self.data_stamp.append(stamp_seq)
-        
-        return test_list, rul_list
-    
-    def __read_data__(self):
-        names = ['unit_nr', 'time_cycles']
-        setting_names = ['setting_1', 'setting_2', 'setting_3']
-        sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
-        col_names = names + setting_names + sensor_names 
-
-        train_list = []
-        self.data_stamp = []
-
-        for index in range(1,5):
-            index_train_file = os.path.join(self.root_path, f'train_FD00{index}.txt')
+        debug_num = 0
+        for file_index in range(1,5):
+            index_train_file = os.path.join(self.root_path, f'train_FD00{file_index}.txt')
             df = pd.read_csv(index_train_file, sep=r'\s+', header=None, names=col_names)
 
             grouped = df.groupby('unit_nr')
@@ -469,124 +432,20 @@ class Dataset_CMAPSS(Dataset):
                 unit_df = unit_df.reset_index(drop=True)
                 #unit_df = pd.concat([self.build_timestamp(stamp_seq), unit_df], axis=1)
                 
-                train_list.append(unit_df)
+                length = self.seq_len + self.pred_len
+                if unit_df.shape[0] < length:
+                    continue
+                
+                pd_list.append(unit_df)
                 self.data_stamp.append(stamp_seq)
 
-        #self.__save_autoformer_csv__("test.csv", train_list)
+        self.targetCol = [df.iloc[:, -1].tolist() for df in pd_list]
+        for df in pd_list:
+            df.iloc[:, -1] = 0
 
-        self.scaler = StandardScaler()
-
-        total_len = len(train_list)
-        num_train = int(total_len * 0.7)
-        num_vali = int(total_len * 0.2)
-        num_test = int(total_len - num_train - num_vali)
-
-        train_concat = train_list[:num_train]
-        concat_df = pd.concat(train_concat, ignore_index=True)
-        self.scaler.fit(concat_df.values)
-        self.data_x = [self.scaler.transform(df.values) for df in train_list]
-
-        if self.set_type == 0:
-            self.data_x = self.data_x[:num_train]
-            self.data_stamp = self.data_stamp[:num_train]
-        elif self.set_type == 1:
-            self.data_x = self.data_x[num_train: num_train + num_vali]
-            self.data_stamp = self.data_stamp[num_train:num_train + num_vali] 
-        elif self.set_type == 2:
-            self.data_x = self.data_x[num_train + num_vali:]
-            self.data_stamp = self.data_stamp[num_train + num_vali:]
-
-        self.data_y = [x.copy() for x in self.data_x]
-
-        self.index_list = []
-        for i, seq in enumerate(self.data_x):
-            max_len = max(0, len(seq) - self.seq_len - self.pred_len + 1)
-            for j in range(max_len):
-                self.index_list.append((i, j))
-        
-    def __getitem__(self, index):
-        i, j = self.index_list[index]
+        return pd_list
     
-        s_begin = j
-        s_end = s_begin + self.seq_len
-        r_begin = s_end - self.label_len
-        r_end = r_begin + self.label_len + self.pred_len
-
-        seq_x = self.data_x[i][s_begin:s_end]
-        seq_y = self.data_y[i][r_begin:r_end]
-        seq_x_mark = self.data_stamp[i][s_begin:s_end]
-        seq_y_mark = self.data_stamp[i][r_begin:r_end]
-
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
-
-    def __len__(self):
-        return len(self.index_list)
-
-    def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
-    
-
-"""
-python -u run.py `
---is_training 0 `
---root_path ./data/ `
---data_path NULL `
---seq_len 30 `
---label_len 0 `
---pred_len 1 `
---features NULL `
---target RUL `
---freq NULL `
---model_id FD_5_25 `
---model Autoformer `
---data Pred `
---checkpoints ./checkpoints/ `
---e_layers 4 `
---d_layers 2 `
---factor 3 `
---enc_in 24 `
---dec_in 24 `
---c_out 1 `
---embed none `
---des quick_test `
---itr 1 `
---train_epochs 100 `
---d_model 768 `
---num_workers 5 `
---batch_size 128
-"""
-class Dataset_Pred(Dataset):
-    def __init__(self, root_path, data_path,size, features, target, timeenc, freq,  flag, scaler=True):
-        
-        self.seq_len = size[0]
-        self.label_len = size[1]
-        self.pred_len = size[2]
-        self.target = target
-        self.root_path = root_path
-        self.data_path = data_path
-        self.features = features
-        self.timeenc = timeenc
-        self.freq = freq
-        self.scale = scaler
-        self.__read_data__()
-
-    def build_timestamp(self, stamp_seq, base_year=1970):
-        n = len(stamp_seq)
-        ts_list = []
-        for idx in range(n):
-            row = stamp_seq.iloc[idx]
-            year  = base_year + idx // 360  
-            month = int(row.month)
-            day   = int(row.day)
-            max_day = calendar.monthrange(year, month)[1]
-            if day > max_day:
-                day = max_day
-            hour   = int(row.hour)
-            minute = int(row.minute) * 15   
-            ts_list.append(datetime(year, month, day, hour, minute, 0).strftime('%Y-%m-%d %H:%M:%S'))
-        return pd.Series(ts_list, name="date")
-    
-    def __read_data__(self):
+    def __load_test_data_(self):
         names = ['unit_nr', 'time_cycles']
         setting_names = ['setting_1', 'setting_2', 'setting_3']
         sensor_names = ['s_{}'.format(i+1) for i in range(0, 21)]
@@ -595,21 +454,20 @@ class Dataset_Pred(Dataset):
         pre_list = []
         self.data_stamp = []
         self.targetCol = []
-        for index in range(1,5):
-            index_train_file = os.path.join(self.root_path, f'test_FD00{index}.txt')
+        for file_index in range(1,5):
+            index_train_file = os.path.join(self.root_path, f'test_FD00{file_index}.txt')
             df = pd.read_csv(index_train_file, sep=r'\s+', header=None, names=col_names)
 
             org_rul_list = []
-            with open(os.path.join(self.root_path, f'RUL_FD00{index}.txt'), "r") as f:
+            with open(os.path.join(self.root_path, f'RUL_FD00{file_index}.txt'), "r") as f:
                 org_rul_list = [int(line.strip()) for line in f if line.strip()]
-
+            #print(org_rul_list)
             grouped = df.groupby('unit_nr')
             if(len(org_rul_list) != grouped.ngroups):
                 print("len(org_rul_list) != grouped.ngroups")
                 quit()
 
-            tmp_rul_list = []
-            for index, unit_df in grouped:
+            for index, (unit_id, unit_df) in enumerate(grouped):
                 cols = list(unit_df.columns)
                 cols.remove('time_cycles')
                 cols.remove('unit_nr')
@@ -627,37 +485,124 @@ class Dataset_Pred(Dataset):
                 stamp_seq = stamp_seq.values.astype(np.float32) 
                 unit_df = unit_df.reset_index(drop=True)
                 unit_df["RUL"] = 0 
-                if unit_df.shape[0] < (self.seq_len + self.pred_len):
+                
+                length = self.seq_len + self.pred_len
+                if unit_df.shape[0] < length:
+                    #print(f"Drop {index}, {org_rul_list[index]}")
                     continue
-
+                
+                unit_df = unit_df.iloc[-length:]
                 pre_list.append(unit_df)
                 self.data_stamp.append(stamp_seq)
-                #self.targetCol.append(org_rul_list[index])
+                #print(org_rul_list[index])
+                self.targetCol.append(org_rul_list[index])
+        return pre_list
+    
+    def __read_data__(self):
+        pd_list = self._load_train_data_()
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
 
-        self.scaler = StandardScaler()
-        concat_df = pd.concat(pre_list, ignore_index=True)
-        self.scaler.fit(concat_df.values)
+        total_len = len(pd_list)
+        num_train = int(total_len * 0.7)
+        num_vali = int(total_len * 0.2)
+        num_test = int(total_len - num_train - num_vali)
 
-        self.data_x = [self.scaler.transform(df.values) for df in pre_list]
-        self.data_y = [x.copy() for x in self.data_x]
+        concat_df = pd.concat(pd_list[:num_train], ignore_index=True)
+        self.scaler_x.fit(concat_df.values)
 
+        concat_targetCol_df = np.concatenate(self.targetCol[:num_train]).reshape(-1, 1)
+        self.scaler_y.fit(concat_targetCol_df)
+        
+        if self.set_type != 3:
+            self.data_x = [self.scaler_x.transform(df.values) for df in pd_list]
+            if self.set_type == 0:
+                self.targetCol = self.targetCol[:num_train]
+                self.data_x = self.data_x[:num_train]
+                self.data_stamp = self.data_stamp[:num_train]
+            elif self.set_type == 1:
+                self.targetCol = self.targetCol[num_train: num_train + num_vali]
+                self.data_x = self.data_x[num_train: num_train + num_vali]
+                self.data_stamp = self.data_stamp[num_train:num_train + num_vali] 
+            elif self.set_type == 2:
+                self.targetCol = self.targetCol[num_train + num_vali:]
+                self.data_x = self.data_x[num_train + num_vali:]
+                self.data_stamp = self.data_stamp[num_train + num_vali:]
+            
+            self.data_y = [x.copy() for x in self.data_x]
+            for i in range(len(self.data_y)):
+                if len(self.data_y[i]) != len(self.targetCol[i]):
+                    print(f"{i}: {len(self.data_y[i])} != {len(self.targetCol[i])}")
+                    quit()
+                self.data_y[i][:, -1] = self.scaler_y.transform(
+                    np.array(self.targetCol[i]).reshape(-1, 1)
+                ).flatten()
+
+            #self.data_y = [self.scaler.transform(y) for y in self.data_y]
+
+        else:
+            pred_list = self.__load_test_data_()
+            self.data_x = [self.scaler_x.transform(df.values) for df in pred_list]
+            self.data_y = [pred.copy() for pred in pred_list]
+            for i in range(len(self.data_y)):
+                self.data_y[i].iloc[-1, -1] = self.targetCol[i]
+            self.data_y = [self.scaler_x.transform(y) for y in self.data_y]
+
+        self.index_list = []
+        for i, seq in enumerate(self.data_x):
+            max_len = max(0, len(seq) - self.seq_len - self.pred_len + 1)
+            for j in range(max_len):
+                self.index_list.append((i, j))
+        
+        #print(self.targetCol)
+        
     def __getitem__(self, index):
-        total_len = self.data_x[index].shape[0]
-        
-        s_begin = total_len - (self.seq_len + self.pred_len)
-        s_end = s_begin + self.seq_len
-        r_begin = total_len - (self.label_len + self.pred_len)
-        r_end = total_len
+        i, j = self.index_list[index]
 
-        seq_x = self.data_x[index][s_begin:s_end]
-        seq_y = self.data_y[index][r_begin:r_end]
-        seq_x_mark = self.data_stamp[index][s_begin:s_end]
-        seq_y_mark = self.data_stamp[index][r_begin:r_end]
-        
+        s_begin = j
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[i][s_begin:s_end]
+        seq_y = self.data_y[i][r_begin:r_end]
+        seq_x_mark = self.data_stamp[i][s_begin:s_end]
+        seq_y_mark = self.data_stamp[i][r_begin:r_end]
+
         return seq_x, seq_y, seq_x_mark, seq_y_mark
 
     def __len__(self):
-        return len(self.data_x)
+        return len(self.index_list)
 
     def inverse_transform(self, data):
-        return self.scaler.inverse_transform(data)
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        return self.scaler_x.inverse_transform(data)
+    
+"""
+python -u run.py `
+--is_training 0 `
+--root_path ./data/ `
+--data_path NULL `
+--seq_len 30 `
+--label_len 0 `
+--pred_len 1 `
+--features NULL `
+--target RUL `
+--freq NULL `
+--model_id FD_5_25 `
+--model Autoformer `
+--data CMAPSS `
+--checkpoints ./checkpoints/ `
+--e_layers 4 `
+--d_layers 2 `
+--factor 3 `
+--enc_in 24 `
+--dec_in 24 `
+--c_out 1 `
+--embed none `
+--des quick_test `
+--itr 1 `
+--d_model 768 `
+--batch_size 1
+"""
+
