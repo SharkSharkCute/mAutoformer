@@ -1,4 +1,5 @@
 import logging
+import glob
 logging.basicConfig(format='%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
     datefmt='%Y-%m-%d:%H:%M:%S',
     level=logging.INFO)
@@ -53,9 +54,10 @@ class Exp_Main(Exp_Basic):
         return criterion
 
     def _predict(self, batch_x, batch_y, batch_x_mark, batch_y_mark):
+        batch_x = batch_x[:,:,:-1]
         # decoder input
-        dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-        dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+        dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :-1]).float()
+        dec_inp = torch.cat([batch_y[:, :self.args.label_len, :-1], dec_inp], dim=1).float().to(self.device)
         # encoder - decoder
 
         def _run_model():
@@ -70,9 +72,8 @@ class Exp_Main(Exp_Basic):
         else:
             outputs = _run_model()
 
-        f_dim = -1 if self.args.features == 'MS' else 0
-        outputs = outputs[:, -self.args.pred_len:, f_dim:]
-        batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+        outputs = outputs[:, -self.args.pred_len:, -1:]
+        batch_y = batch_y[:, -self.args.pred_len:, -1:].to(self.device)
 
         return outputs, batch_y
 
@@ -93,7 +94,7 @@ class Exp_Main(Exp_Basic):
                 true = batch_y.detach().cpu()
 
                 loss = criterion(pred, true)
-
+            
                 total_loss.append(loss)
         total_loss = np.average(total_loss)
         self.model.train()
@@ -109,9 +110,8 @@ class Exp_Main(Exp_Basic):
             os.makedirs(path)
 
         time_now = time.time()
-
         train_steps = len(train_loader)
-        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        #early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
@@ -125,6 +125,12 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
+            mean_x = train_loader.dataset.scaler_x.mean_[-1]
+            scale_x = train_loader.dataset.scaler_x.scale_[-1]
+
+            mean_y = train_loader.dataset.scaler_y.mean_[-1]
+            scale_y = train_loader.dataset.scaler_y.scale_[-1]
+
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
@@ -137,6 +143,11 @@ class Exp_Main(Exp_Basic):
                 outputs, batch_y = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
 
                 loss = criterion(outputs, batch_y)
+                """
+                outputs_original = outputs * scale_y + mean_y 
+                batch_y_original = batch_y * scale_y + mean_y 
+                print(f"{int(outputs_original[0, 0,0])}, {int(batch_y_original[0,0,0])}")
+                """
                 train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
@@ -147,6 +158,8 @@ class Exp_Main(Exp_Basic):
                     iter_count = 0
                     time_now = time.time()
 
+                    #print(f"{int(outputs_original[0, 0,0])}, {int(batch_y_original[0,0,0])}")
+                    #print(f"{outputs.shape},  {batch_y.shape}")
                 if self.args.use_amp:
                     scaler.scale(loss).backward()
                     scaler.step(model_optim)
@@ -160,12 +173,15 @@ class Exp_Main(Exp_Basic):
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             test_loss = self.vali(test_data, test_loader, criterion)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss))
+            
+            """
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
+            """
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
@@ -174,19 +190,13 @@ class Exp_Main(Exp_Basic):
 
         return
 
-    def test(self, setting, test=0):
-        test_data, test_loader = self._get_data(flag='test')
-        if test:
-            print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
-
-        preds = []
-        trues = []
-        folder_path = './test_results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
+    def test(self, setting, test):
+        test_data, test_loader = self._get_data(flag = 'real_test')
+        self.model.load_state_dict(torch.load(os.path.join('./checkpoints/' + setting, 'checkpoint.pth')))
 
         self.model.eval()
+        mean = test_loader.dataset.scaler.mean_[-1]
+        scale = test_loader.dataset.scaler.scale_[-1]
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
@@ -195,48 +205,23 @@ class Exp_Main(Exp_Basic):
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
-                outputs, batch_y = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
-
+                outputs, data_y = self._predict(batch_x, batch_y, batch_x_mark, batch_y_mark)
                 outputs = outputs.detach().cpu().numpy()
-                batch_y = batch_y.detach().cpu().numpy()
+                data_y = data_y.detach().cpu().numpy()
 
-                pred = outputs  # outputs.detach().cpu().numpy()  # .squeeze()
-                true = batch_y  # batch_y.detach().cpu().numpy()  # .squeeze()
+                outputs_original = outputs * scale + mean
+                data_y_original = data_y * scale + mean 
+                print(f"{outputs_original[0, 0,0]}, {data_y_original[0,0,0]}")
 
-                preds.append(pred)
-                trues.append(true)
-                if i % 20 == 0:
-                    input = batch_x.detach().cpu().numpy()
-                    gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
-                    pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+    def test1(self, setting, test):
+        test_data, test_loader = self._get_data(flag = 'real_test')
 
-        preds = np.concatenate(preds, axis=0)
-        trues = np.concatenate(trues, axis=0)
-        print('test shape:', preds.shape, trues.shape)
-        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        print('test shape:', preds.shape, trues.shape)
-
-        # result save
-        folder_path = './results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-
-        mae, mse, rmse, mape, mspe = metric(preds, trues)
-        print('mse:{}, mae:{}'.format(mse, mae))
-        f = open("result.txt", 'a')
-        f.write(setting + "  \n")
-        f.write('mse:{}, mae:{}'.format(mse, mae))
-        f.write('\n')
-        f.write('\n')
-        f.close()
-
-        np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
-        np.save(folder_path + 'pred.npy', preds)
-        np.save(folder_path + 'true.npy', trues)
-
-        return
+        with torch.no_grad():
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+                batch_y = batch_y.float().to(self.device)
+                
+                batch_y = batch_y[:, -self.args.pred_len:, -1:].to(self.device)
+                print(f"{batch_y[0,0,0]}", end=" ")
 
     def predict(self, setting, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
